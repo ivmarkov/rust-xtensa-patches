@@ -1,0 +1,42 @@
+From 3e4922bd963c9f8d98c268cff48317de3c273d62 Mon Sep 17 00:00:00 2001
+From: Ivan Markov <ivan.markov@gmail.com>
+Date: Thu, 12 Nov 2020 21:20:46 +0200
+Subject: [PATCH 5/6] Switch to our fork of backtrace which is noop on bare
+ metal platforms
+
+Fix these submodules to point at their correct repos and branches
+
+Fix the reference to backtrace
+---
+ .gitmodules       | 2 +-
+ library/backtrace | 2 +-
+ src/llvm-project  | 2 +-
+ 3 files changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/.gitmodules b/.gitmodules
+index 1bd687092e9..d78b7e28bff 100644
+--- a/.gitmodules
++++ b/.gitmodules
+@@ -46,4 +46,4 @@
+ 	url = https://github.com/rust-analyzer/rust-analyzer.git
+ [submodule "library/backtrace"]
+ 	path = library/backtrace
+-	url = https://github.com/rust-lang/backtrace-rs.git
++	url = https://github.com/ivmarkov/backtrace-rs.git
+diff --git a/library/backtrace b/library/backtrace
+index 8b8ea53b56f..251fc07b723 160000
+--- a/library/backtrace
++++ b/library/backtrace
+@@ -1 +1 @@
+-Subproject commit 8b8ea53b56f519dd7780defdd4254daaec892584
++Subproject commit 251fc07b723bedaf0eab53541114706df122b9e2
+diff --git a/src/llvm-project b/src/llvm-project
+index ee161745789..348e54d4164 160000
+--- a/src/llvm-project
++++ b/src/llvm-project
+@@ -1 +1 @@
+-Subproject commit ee1617457899ef2eb55dcf7ee2758b4340b6533f
++Subproject commit 348e54d4164b32c862dc06069a44a01d85903b52
+-- 
+2.17.1
+
