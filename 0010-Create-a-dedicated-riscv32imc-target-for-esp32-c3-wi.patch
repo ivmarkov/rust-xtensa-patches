@@ -1,0 +1,64 @@
+From ac9562e16de386c24c2836770399759dde042761 Mon Sep 17 00:00:00 2001
+From: Ivan Markov <ivan.markov@gmail.com>
+Date: Sat, 3 Jul 2021 20:21:31 +0300
+Subject: [PATCH 10/13] Create a dedicated riscv32imc target for esp32-c3 with
+ filled-in os_family, env, and vendor information
+
+---
+ compiler/rustc_target/src/spec/mod.rs         |  1 +
+ .../src/spec/riscv32imc_esp32c3_none_elf.rs   | 31 +++++++++++++++++++
+ 2 files changed, 32 insertions(+)
+ create mode 100644 compiler/rustc_target/src/spec/riscv32imc_esp32c3_none_elf.rs
+
+diff --git a/compiler/rustc_target/src/spec/mod.rs b/compiler/rustc_target/src/spec/mod.rs
+index 1baeba8070d..193249fa099 100644
+--- a/compiler/rustc_target/src/spec/mod.rs
++++ b/compiler/rustc_target/src/spec/mod.rs
+@@ -864,6 +864,7 @@ supported_targets! {
+ 
+     ("riscv32i-unknown-none-elf", riscv32i_unknown_none_elf),
+     ("riscv32imc-unknown-none-elf", riscv32imc_unknown_none_elf),
++    ("riscv32imc-esp32c3-none-elf", riscv32imc_esp32c3_none_elf),
+     ("riscv32imac-unknown-none-elf", riscv32imac_unknown_none_elf),
+     ("riscv32gc-unknown-linux-gnu", riscv32gc_unknown_linux_gnu),
+     ("riscv32gc-unknown-linux-musl", riscv32gc_unknown_linux_musl),
+diff --git a/compiler/rustc_target/src/spec/riscv32imc_esp32c3_none_elf.rs b/compiler/rustc_target/src/spec/riscv32imc_esp32c3_none_elf.rs
+new file mode 100644
+index 00000000000..df1fc484f5d
+--- /dev/null
++++ b/compiler/rustc_target/src/spec/riscv32imc_esp32c3_none_elf.rs
+@@ -0,0 +1,31 @@
++use crate::spec::{LinkerFlavor, PanicStrategy, RelocModel};
++use crate::spec::{Target, TargetOptions};
++
++pub fn target() -> Target {
++    Target {
++        data_layout: "e-m:e-p:32:32-i64:64-n32-S128".to_string(),
++        llvm_target: "riscv32".to_string(),
++        pointer_width: 32,
++        arch: "riscv32".to_string(),
++
++        options: TargetOptions {
++            os_family: Some("unix".to_string()),
++            os: "none".to_string(),
++            env: "newlib".to_string(),
++            vendor: "espressif".to_string(),
++            linker_flavor: LinkerFlavor::Gcc,
++            linker: Some("xtensa-esp32c3-elf-gcc".to_string()),
++            cpu: "esp32-c3".to_string(),
++            max_atomic_width: Some(0),
++            atomic_cas: false,
++            features: "+m,+c".to_string(),
++            executables: true,
++            panic_strategy: PanicStrategy::Abort,
++            relocation_model: RelocModel::Static,
++            emit_debug_gdb_scripts: false,
++            unsupported_abis: super::riscv_base::unsupported_abis(),
++            eh_frame_header: false,
++            ..Default::default()
++        },
++    }
++}
+-- 
+2.17.1
+

@@ -1,0 +1,1834 @@
+From 6c2688ab9ff54b845bd1420b6910b15fe0aef659 Mon Sep 17 00:00:00 2001
+From: Ivan Markov <ivan.markov@gmail.com>
+Date: Sun, 4 Jul 2021 12:50:50 +0300
+Subject: [PATCH 12/13] ESP32 STD support based on ESP-IDF
+
+---
+ library/std/build.rs                          |   1 +
+ library/std/src/os/mod.rs                     |   2 +
+ library/std/src/os/none/fs.rs                 | 126 ++++++++
+ library/std/src/os/none/mod.rs                |   7 +
+ library/std/src/os/none/raw.rs                |  74 +++++
+ library/std/src/sys/common/alloc.rs           |   3 +-
+ library/std/src/sys/unix/alloc.rs             |   6 +
+ library/std/src/sys/unix/condvar.rs           |  30 +-
+ library/std/src/sys/unix/env.rs               |  11 +
+ library/std/src/sys/unix/ext/mod.rs           |   2 +
+ library/std/src/sys/unix/fd.rs                |  89 ++++-
+ library/std/src/sys/unix/fs.rs                |  28 +-
+ library/std/src/sys/unix/mod.rs               |  10 +
+ library/std/src/sys/unix/mutex.rs             |  67 ++--
+ library/std/src/sys/unix/net.rs               |  10 +-
+ library/std/src/sys/unix/net_lwip.rs          | 304 ++++++++++++++++++
+ library/std/src/sys/unix/os.rs                |  58 +++-
+ library/std/src/sys/unix/process/mod.rs       |   3 +
+ .../std/src/sys/unix/process/process_none.rs  | 105 ++++++
+ library/std/src/sys/unix/rand.rs              |  19 +-
+ library/std/src/sys/unix/thread.rs            |  84 ++++-
+ library/std/src/sys/unix/time.rs              |   4 +-
+ library/std/src/sys/unsupported/args.rs       |   4 +
+ library/std/src/sys/wasm/rwlock_atomics.rs    |  50 ++-
+ library/std/src/sys_common/io.rs              |   3 +-
+ 25 files changed, 1025 insertions(+), 75 deletions(-)
+ create mode 100644 library/std/src/os/none/fs.rs
+ create mode 100644 library/std/src/os/none/mod.rs
+ create mode 100644 library/std/src/os/none/raw.rs
+ create mode 100644 library/std/src/sys/unix/net_lwip.rs
+ create mode 100644 library/std/src/sys/unix/process/process_none.rs
+
+diff --git a/library/std/build.rs b/library/std/build.rs
+index a14ac63c7a8..a823c4433ac 100644
+--- a/library/std/build.rs
++++ b/library/std/build.rs
+@@ -26,6 +26,7 @@ fn main() {
+         || target.contains("vxworks")
+         || target.contains("wasm32")
+         || target.contains("asmjs")
++        || target.contains("esp32")
+     {
+         // These platforms don't have any special requirements.
+     } else {
+diff --git a/library/std/src/os/mod.rs b/library/std/src/os/mod.rs
+index b95511e43d8..4757ed1880c 100644
+--- a/library/std/src/os/mod.rs
++++ b/library/std/src/os/mod.rs
+@@ -68,6 +68,8 @@ pub mod ios;
+ pub mod macos;
+ #[cfg(target_os = "netbsd")]
+ pub mod netbsd;
++#[cfg(all(target_os = "none", target_env = "newlib", target_vendor = "espressif"))]
++pub mod none;
+ #[cfg(target_os = "openbsd")]
+ pub mod openbsd;
+ #[cfg(target_os = "redox")]
+diff --git a/library/std/src/os/none/fs.rs b/library/std/src/os/none/fs.rs
+new file mode 100644
+index 00000000000..b1fa8836911
+--- /dev/null
++++ b/library/std/src/os/none/fs.rs
+@@ -0,0 +1,126 @@
++#![stable(feature = "metadata_ext", since = "1.1.0")]
++
++use crate::fs::Metadata;
++use crate::sys_common::AsInner;
++
++#[allow(deprecated)]
++use crate::os::none::raw;
++
++/// OS-specific extensions to [`fs::Metadata`].
++///
++/// [`fs::Metadata`]: crate::fs::Metadata
++#[stable(feature = "metadata_ext", since = "1.1.0")]
++pub trait MetadataExt {
++    #[stable(feature = "metadata_ext", since = "1.1.0")]
++    #[rustc_deprecated(
++        since = "1.8.0",
++        reason = "deprecated in favor of the accessor \
++                  methods of this trait"
++    )]
++    #[allow(deprecated)]
++    fn as_raw_stat(&self) -> &raw::stat;
++
++    #[stable(feature = "metadata_ext2", since = "1.8.0")]
++    fn st_dev(&self) -> u64;
++    #[stable(feature = "metadata_ext2", since = "1.8.0")]
++    fn st_ino(&self) -> u64;
++    #[stable(feature = "metadata_ext2", since = "1.8.0")]
++    fn st_mode(&self) -> u32;
++    #[stable(feature = "metadata_ext2", since = "1.8.0")]
++    fn st_nlink(&self) -> u64;
++    #[stable(feature = "metadata_ext2", since = "1.8.0")]
++    fn st_uid(&self) -> u32;
++    #[stable(feature = "metadata_ext2", since = "1.8.0")]
++    fn st_gid(&self) -> u32;
++    #[stable(feature = "metadata_ext2", since = "1.8.0")]
++    fn st_rdev(&self) -> u64;
++    #[stable(feature = "metadata_ext2", since = "1.8.0")]
++    fn st_size(&self) -> u64;
++    #[stable(feature = "metadata_ext2", since = "1.8.0")]
++    fn st_atime(&self) -> i64;
++    #[stable(feature = "metadata_ext2", since = "1.8.0")]
++    fn st_atime_nsec(&self) -> i64;
++    #[stable(feature = "metadata_ext2", since = "1.8.0")]
++    fn st_mtime(&self) -> i64;
++    #[stable(feature = "metadata_ext2", since = "1.8.0")]
++    fn st_mtime_nsec(&self) -> i64;
++    #[stable(feature = "metadata_ext2", since = "1.8.0")]
++    fn st_ctime(&self) -> i64;
++    #[stable(feature = "metadata_ext2", since = "1.8.0")]
++    fn st_ctime_nsec(&self) -> i64;
++    #[stable(feature = "metadata_ext2", since = "1.8.0")]
++    fn st_crtime(&self) -> i64;
++    #[stable(feature = "metadata_ext2", since = "1.8.0")]
++    fn st_crtime_nsec(&self) -> i64;
++    #[stable(feature = "metadata_ext2", since = "1.8.0")]
++    fn st_blksize(&self) -> u64;
++    #[stable(feature = "metadata_ext2", since = "1.8.0")]
++    fn st_blocks(&self) -> u64;
++}
++
++#[stable(feature = "metadata_ext", since = "1.1.0")]
++impl MetadataExt for Metadata {
++    #[allow(deprecated)]
++    fn as_raw_stat(&self) -> &raw::stat {
++        unsafe { &*(self.as_inner().as_inner() as *const libc::stat as *const raw::stat) }
++    }
++    fn st_dev(&self) -> u64 {
++        self.as_inner().as_inner().st_dev as u64
++    }
++    fn st_ino(&self) -> u64 {
++        self.as_inner().as_inner().st_ino as u64
++    }
++    fn st_mode(&self) -> u32 {
++        self.as_inner().as_inner().st_mode as u32
++    }
++    fn st_nlink(&self) -> u64 {
++        self.as_inner().as_inner().st_nlink as u64
++    }
++    fn st_uid(&self) -> u32 {
++        self.as_inner().as_inner().st_uid as u32
++    }
++    fn st_gid(&self) -> u32 {
++        self.as_inner().as_inner().st_gid as u32
++    }
++    fn st_rdev(&self) -> u64 {
++        self.as_inner().as_inner().st_rdev as u64
++    }
++    fn st_size(&self) -> u64 {
++        self.as_inner().as_inner().st_size as u64
++    }
++    fn st_atime(&self) -> i64 {
++        self.as_inner().as_inner().st_atime as i64
++    }
++    fn st_atime_nsec(&self) -> i64 {
++        //self.as_inner().as_inner().st_atime_nsec as i64
++        0
++    }
++    fn st_mtime(&self) -> i64 {
++        self.as_inner().as_inner().st_mtime as i64
++    }
++    fn st_mtime_nsec(&self) -> i64 {
++        //self.as_inner().as_inner().st_mtime_nsec as i64
++        0
++    }
++    fn st_ctime(&self) -> i64 {
++        self.as_inner().as_inner().st_ctime as i64
++    }
++    fn st_ctime_nsec(&self) -> i64 {
++        //self.as_inner().as_inner().st_ctime_nsec as i64
++        0
++    }
++    fn st_crtime(&self) -> i64 {
++        //self.as_inner().as_inner().st_crtime as i64
++        0
++    }
++    fn st_crtime_nsec(&self) -> i64 {
++        //self.as_inner().as_inner().st_crtime_nsec as i64
++        0
++    }
++    fn st_blksize(&self) -> u64 {
++        self.as_inner().as_inner().st_blksize as u64
++    }
++    fn st_blocks(&self) -> u64 {
++        self.as_inner().as_inner().st_blocks as u64
++    }
++}
+diff --git a/library/std/src/os/none/mod.rs b/library/std/src/os/none/mod.rs
+new file mode 100644
+index 00000000000..f44e89e809d
+--- /dev/null
++++ b/library/std/src/os/none/mod.rs
+@@ -0,0 +1,7 @@
++//! Definitions for bare metal platforms that nevertheless do have a POSIX compatibility layer
++
++// TODO: Figure out if these can be proclaimed as "stable" and if yes, since what version
++#![stable(feature = "raw_ext", since = "1.1.0")]
++
++pub mod fs;
++pub mod raw;
+diff --git a/library/std/src/os/none/raw.rs b/library/std/src/os/none/raw.rs
+new file mode 100644
+index 00000000000..f5123b8a935
+--- /dev/null
++++ b/library/std/src/os/none/raw.rs
+@@ -0,0 +1,74 @@
++//! Bare-metal (usually newlib based) raw type definitions
++
++#![stable(feature = "raw_ext", since = "1.1.0")]
++#![allow(deprecated)]
++
++use crate::os::raw::c_long;
++use crate::os::unix::raw::{gid_t, uid_t};
++
++// Use the direct definition of usize, instead of uintptr_t like in libc
++#[stable(feature = "pthread_t", since = "1.8.0")]
++pub type pthread_t = libc::pthread_t;
++
++#[stable(feature = "raw_ext", since = "1.1.0")]
++pub type blkcnt_t = libc::blkcnt_t;
++
++#[stable(feature = "raw_ext", since = "1.1.0")]
++pub type blksize_t = libc::blksize_t;
++#[stable(feature = "raw_ext", since = "1.1.0")]
++pub type dev_t = libc::dev_t;
++#[stable(feature = "raw_ext", since = "1.1.0")]
++pub type ino_t = libc::ino_t;
++#[stable(feature = "raw_ext", since = "1.1.0")]
++pub type mode_t = libc::mode_t;
++#[stable(feature = "raw_ext", since = "1.1.0")]
++pub type nlink_t = libc::nlink_t;
++#[stable(feature = "raw_ext", since = "1.1.0")]
++pub type off_t = libc::off_t;
++
++#[stable(feature = "raw_ext", since = "1.1.0")]
++pub type time_t = libc::time_t;
++
++#[repr(C)]
++#[derive(Clone)]
++#[stable(feature = "raw_ext", since = "1.1.0")]
++pub struct stat {
++    #[stable(feature = "raw_ext", since = "1.1.0")]
++    pub st_dev: dev_t,
++    #[stable(feature = "raw_ext", since = "1.1.0")]
++    pub st_ino: ino_t,
++    #[stable(feature = "raw_ext", since = "1.1.0")]
++    pub st_mode: mode_t,
++    #[stable(feature = "raw_ext", since = "1.1.0")]
++    pub st_nlink: nlink_t,
++    #[stable(feature = "raw_ext", since = "1.1.0")]
++    pub st_uid: uid_t,
++    #[stable(feature = "raw_ext", since = "1.1.0")]
++    pub st_gid: gid_t,
++    #[stable(feature = "raw_ext", since = "1.1.0")]
++    pub st_rdev: dev_t,
++    #[stable(feature = "raw_ext", since = "1.1.0")]
++    pub st_size: off_t,
++    #[stable(feature = "raw_ext", since = "1.1.0")]
++    pub st_atime: time_t,
++    // #[stable(feature = "raw_ext", since = "1.1.0")]
++    // pub st_atime_nsec: c_long,
++    #[stable(feature = "raw_ext", since = "1.1.0")]
++    pub st_mtime: time_t,
++    // #[stable(feature = "raw_ext", since = "1.1.0")]
++    // pub st_mtime_nsec: c_long,
++    #[stable(feature = "raw_ext", since = "1.1.0")]
++    pub st_ctime: time_t,
++    // #[stable(feature = "raw_ext", since = "1.1.0")]
++    // pub st_ctime_nsec: c_long,
++    // #[stable(feature = "raw_ext", since = "1.1.0")]
++    // pub st_crtime: time_t,
++    // #[stable(feature = "raw_ext", since = "1.1.0")]
++    // pub st_crtime_nsec: c_long,
++    #[stable(feature = "raw_ext", since = "1.1.0")]
++    pub st_blksize: blksize_t,
++    #[stable(feature = "raw_ext", since = "1.1.0")]
++    pub st_blocks: blkcnt_t,
++    // #[stable(feature = "raw_ext", since = "1.1.0")]
++    // pub st_type: u32,
++}
+diff --git a/library/std/src/sys/common/alloc.rs b/library/std/src/sys/common/alloc.rs
+index 2a54e99020e..576667c0173 100644
+--- a/library/std/src/sys/common/alloc.rs
++++ b/library/std/src/sys/common/alloc.rs
+@@ -14,7 +14,8 @@ use crate::ptr;
+     target_arch = "asmjs",
+     target_arch = "wasm32",
+     target_arch = "hexagon",
+-    target_arch = "riscv32"
++    target_arch = "riscv32",
++    target_arch = "xtensa"
+ )))]
+ pub const MIN_ALIGN: usize = 8;
+ #[cfg(all(any(
+diff --git a/library/std/src/sys/unix/alloc.rs b/library/std/src/sys/unix/alloc.rs
+index 1b71905aa09..a7d01122623 100644
+--- a/library/std/src/sys/unix/alloc.rs
++++ b/library/std/src/sys/unix/alloc.rs
+@@ -85,6 +85,12 @@ cfg_if::cfg_if! {
+         unsafe fn aligned_malloc(layout: &Layout) -> *mut u8 {
+             libc::aligned_alloc(layout.align(), layout.size()) as *mut u8
+         }
++    } else if #[cfg(all(target_os = "none", target_vendor = "espressif"))] {
++        #[inline]
++        unsafe fn aligned_malloc(layout: &Layout) -> *mut u8 {
++            // TODO: This is very likely NOT OK
++            libc::malloc(layout.size()) as *mut u8
++        }
+     } else {
+         #[inline]
+         unsafe fn aligned_malloc(layout: &Layout) -> *mut u8 {
+diff --git a/library/std/src/sys/unix/condvar.rs b/library/std/src/sys/unix/condvar.rs
+index e38f91af9f0..b047c11094f 100644
+--- a/library/std/src/sys/unix/condvar.rs
++++ b/library/std/src/sys/unix/condvar.rs
+@@ -34,12 +34,21 @@ impl Condvar {
+     ))]
+     pub unsafe fn init(&mut self) {}
+ 
++    // NOTE: ESP-IDF's PTHREAD_COND_INITIALIZER support is not released yet
++    // So on that platform, init() should always be called
++    #[cfg(all(target_os = "none", target_vendor = "espressif"))]
++    pub unsafe fn init(&mut self) {
++        let r = libc::pthread_cond_init(self.inner.get(), crate::ptr::null());
++        assert_eq!(r, 0);
++    }
++
+     #[cfg(not(any(
+         target_os = "macos",
+         target_os = "ios",
+         target_os = "l4re",
+         target_os = "android",
+-        target_os = "redox"
++        target_os = "redox",
++        all(target_os = "none", target_vendor = "espressif")
+     )))]
+     pub unsafe fn init(&mut self) {
+         use crate::mem::MaybeUninit;
+@@ -68,7 +77,7 @@ impl Condvar {
+ 
+     #[inline]
+     pub unsafe fn wait(&self, mutex: &Mutex) {
+-        let r = libc::pthread_cond_wait(self.inner.get(), mutex::raw(mutex));
++        let r = libc::pthread_cond_wait(self.inner.get(), mutex::raw(mutex) as *mut _);
+         debug_assert_eq!(r, 0);
+     }
+ 
+@@ -76,7 +85,12 @@ impl Condvar {
+     // where we configure condition variable to use monotonic clock (instead of
+     // default system clock). This approach avoids all problems that result
+     // from changes made to the system time.
+-    #[cfg(not(any(target_os = "macos", target_os = "ios", target_os = "android")))]
++    #[cfg(not(any(
++        target_os = "macos",
++        target_os = "ios",
++        target_os = "android",
++        all(target_os = "none", target_vendor = "espressif")
++    )))]
+     pub unsafe fn wait_timeout(&self, mutex: &Mutex, dur: Duration) -> bool {
+         use crate::mem;
+ 
+@@ -103,7 +117,12 @@ impl Condvar {
+     // This implementation is modeled after libcxx's condition_variable
+     // https://github.com/llvm-mirror/libcxx/blob/release_35/src/condition_variable.cpp#L46
+     // https://github.com/llvm-mirror/libcxx/blob/release_35/include/__mutex_base#L367
+-    #[cfg(any(target_os = "macos", target_os = "ios", target_os = "android"))]
++    #[cfg(any(
++        target_os = "macos",
++        target_os = "ios",
++        target_os = "android",
++        all(target_os = "none", target_vendor = "espressif")
++    ))]
+     pub unsafe fn wait_timeout(&self, mutex: &Mutex, mut dur: Duration) -> bool {
+         use crate::ptr;
+         use crate::time::Instant;
+@@ -148,7 +167,8 @@ impl Condvar {
+             .unwrap_or(TIMESPEC_MAX);
+ 
+         // And wait!
+-        let r = libc::pthread_cond_timedwait(self.inner.get(), mutex::raw(mutex), &timeout);
++        let r =
++            libc::pthread_cond_timedwait(self.inner.get(), mutex::raw(mutex) as *mut _, &timeout);
+         debug_assert!(r == libc::ETIMEDOUT || r == 0);
+ 
+         // ETIMEDOUT is not a totally reliable method of determining timeout due
+diff --git a/library/std/src/sys/unix/env.rs b/library/std/src/sys/unix/env.rs
+index 3a88dc083b0..584ac02d3b1 100644
+--- a/library/std/src/sys/unix/env.rs
++++ b/library/std/src/sys/unix/env.rs
+@@ -184,3 +184,14 @@ pub mod os {
+     pub const EXE_SUFFIX: &str = "";
+     pub const EXE_EXTENSION: &str = "";
+ }
++
++#[cfg(all(target_os = "none", target_vendor = "espressif"))]
++pub mod os {
++    pub const FAMILY: &str = "unix";
++    pub const OS: &str = "none";
++    pub const DLL_PREFIX: &str = "lib";
++    pub const DLL_SUFFIX: &str = ".so";
++    pub const DLL_EXTENSION: &str = "so";
++    pub const EXE_SUFFIX: &str = "";
++    pub const EXE_EXTENSION: &str = "";
++}
+diff --git a/library/std/src/sys/unix/ext/mod.rs b/library/std/src/sys/unix/ext/mod.rs
+index 735bf35a3ce..f8b0764ca54 100644
+--- a/library/std/src/sys/unix/ext/mod.rs
++++ b/library/std/src/sys/unix/ext/mod.rs
+@@ -56,6 +56,8 @@ cfg_if::cfg_if! {
+         use crate::os::macos as platform;
+         #[cfg(target_os = "netbsd")]
+         use crate::os::netbsd as platform;
++        #[cfg(all(target_os = "none", target_env = "newlib", target_vendor = "espressif"))]
++        use crate::os::none as platform;
+         #[cfg(target_os = "openbsd")]
+         use crate::os::openbsd as platform;
+         #[cfg(target_os = "redox")]
+diff --git a/library/std/src/sys/unix/fd.rs b/library/std/src/sys/unix/fd.rs
+index 821851a6c65..d41460c3d54 100644
+--- a/library/std/src/sys/unix/fd.rs
++++ b/library/std/src/sys/unix/fd.rs
+@@ -1,5 +1,14 @@
+ #![unstable(reason = "not public", issue = "none", feature = "fd")]
+ 
++#[cfg(all(target_os = "none", target_vendor = "espressif"))]
++use crate::lazy::SyncLazy;
++
++#[cfg(all(target_os = "none", target_vendor = "espressif"))]
++use crate::sync::Mutex;
++
++#[cfg(all(target_os = "none", target_vendor = "espressif"))]
++use crate::collections::HashMap;
++
+ #[cfg(test)]
+ mod tests;
+ 
+@@ -66,6 +75,10 @@ const fn max_iov() -> usize {
+     16 // The minimum value required by POSIX.
+ }
+ 
++// A useful utility for platforms that do not natively suport duplication of file descriptors
++#[cfg(all(target_os = "none", target_vendor = "espressif"))]
++static MAP: SyncLazy<Mutex<HashMap<c_int, u32>>> = SyncLazy::new(|| Mutex::new(HashMap::new()));
++
+ impl FileDesc {
+     pub fn new(fd: c_int) -> FileDesc {
+         assert_ne!(fd, -1i32);
+@@ -79,6 +92,7 @@ impl FileDesc {
+ 
+     /// Extracts the actual file descriptor without closing it.
+     pub fn into_raw(self) -> c_int {
++        self.forget();
+         let fd = self.fd;
+         mem::forget(self);
+         fd
+@@ -91,6 +105,7 @@ impl FileDesc {
+         Ok(ret as usize)
+     }
+ 
++    #[cfg(not(target_env = "newlib"))]
+     pub fn read_vectored(&self, bufs: &mut [IoSliceMut<'_>]) -> io::Result<usize> {
+         let ret = cvt(unsafe {
+             libc::readv(
+@@ -102,9 +117,14 @@ impl FileDesc {
+         Ok(ret as usize)
+     }
+ 
++    #[cfg(target_env = "newlib")]
++    pub fn read_vectored(&self, bufs: &mut [IoSliceMut<'_>]) -> io::Result<usize> {
++        return crate::io::default_read_vectored(|b| self.read(b), bufs);
++    }
++
+     #[inline]
+     pub fn is_read_vectored(&self) -> bool {
+-        true
++        cfg!(not(target_env = "newlib"))
+     }
+ 
+     pub fn read_to_end(&self, buf: &mut Vec<u8>) -> io::Result<usize> {
+@@ -148,6 +168,7 @@ impl FileDesc {
+         Ok(ret as usize)
+     }
+ 
++    #[cfg(not(target_env = "newlib"))]
+     pub fn write_vectored(&self, bufs: &[IoSlice<'_>]) -> io::Result<usize> {
+         let ret = cvt(unsafe {
+             libc::writev(
+@@ -159,9 +180,14 @@ impl FileDesc {
+         Ok(ret as usize)
+     }
+ 
++    #[cfg(target_env = "newlib")]
++    pub fn write_vectored(&self, bufs: &[IoSlice<'_>]) -> io::Result<usize> {
++        return crate::io::default_write_vectored(|b| self.write(b), bufs);
++    }
++
+     #[inline]
+     pub fn is_write_vectored(&self) -> bool {
+-        true
++        cfg!(not(target_env = "newlib"))
+     }
+ 
+     pub fn write_at(&self, buf: &[u8], offset: u64) -> io::Result<usize> {
+@@ -199,7 +225,7 @@ impl FileDesc {
+     }
+ 
+     #[cfg(not(any(
+-        target_env = "newlib",
++        target_os = "none",
+         target_os = "solaris",
+         target_os = "illumos",
+         target_os = "emscripten",
+@@ -217,7 +243,6 @@ impl FileDesc {
+         }
+     }
+     #[cfg(any(
+-        target_env = "newlib",
+         target_os = "solaris",
+         target_os = "illumos",
+         target_os = "emscripten",
+@@ -238,6 +263,10 @@ impl FileDesc {
+             Ok(())
+         }
+     }
++    #[cfg(target_os = "none")]
++    pub fn set_cloexec(&self) -> io::Result<()> {
++        Ok(())
++    }
+ 
+     #[cfg(target_os = "linux")]
+     pub fn set_nonblocking(&self, nonblocking: bool) -> io::Result<()> {
+@@ -264,6 +293,13 @@ impl FileDesc {
+         }
+     }
+ 
++    #[cfg(all(target_os = "none", target_vendor = "espressif"))]
++    pub fn duplicate(&self) -> io::Result<FileDesc> {
++        self.add_ref();
++        Ok(FileDesc::new(self.fd))
++    }
++
++    #[cfg(not(all(target_os = "none", target_vendor = "espressif")))]
+     pub fn duplicate(&self) -> io::Result<FileDesc> {
+         // We want to atomically duplicate this file descriptor and set the
+         // CLOEXEC flag, and currently that's done via F_DUPFD_CLOEXEC. This
+@@ -271,6 +307,47 @@ impl FileDesc {
+         let fd = cvt(unsafe { libc::fcntl(self.raw(), libc::F_DUPFD_CLOEXEC, 0) })?;
+         Ok(FileDesc::new(fd))
+     }
++
++    #[cfg(all(target_os = "none", target_vendor = "espressif"))]
++    fn add_ref(&self) {
++        let mut map = MAP.lock().unwrap();
++        match map.get_mut(&self.fd) {
++            Some(refcnt) => {
++                *refcnt = *refcnt + 1;
++            }
++            None => {
++                map.insert(self.fd, 2);
++            }
++        };
++    }
++
++    fn remove_ref(&self) -> bool {
++        #[cfg(all(target_os = "none", target_vendor = "espressif"))]
++        {
++            let mut map = MAP.lock().unwrap();
++            match map.get_mut(&self.fd) {
++                Some(refcnt) => {
++                    *refcnt = *refcnt - 1;
++                    let close = *refcnt == 1;
++                    if close {
++                        map.remove(&self.fd);
++                    }
++                    close
++                }
++                None => true,
++            }
++        }
++
++        #[cfg(not(all(target_os = "none", target_vendor = "espressif")))]
++        true
++    }
++
++    fn forget(&self) {
++        #[cfg(all(target_os = "none", target_vendor = "espressif"))]
++        {
++            MAP.lock().unwrap().remove(&self.fd);
++        }
++    }
+ }
+ 
+ impl<'a> Read for &'a FileDesc {
+@@ -297,6 +374,8 @@ impl Drop for FileDesc {
+         // the file descriptor was closed or not, and if we retried (for
+         // something like EINTR), we might close another valid file descriptor
+         // opened after we closed ours.
+-        let _ = unsafe { libc::close(self.fd) };
++        if self.remove_ref() {
++            let _ = unsafe { libc::close(self.fd) };
++        }
+     }
+ }
+diff --git a/library/std/src/sys/unix/fs.rs b/library/std/src/sys/unix/fs.rs
+index 45bae25a0c3..336650831d1 100644
+--- a/library/std/src/sys/unix/fs.rs
++++ b/library/std/src/sys/unix/fs.rs
+@@ -297,7 +297,7 @@ impl FileAttr {
+ 
+ #[cfg(not(target_os = "netbsd"))]
+ impl FileAttr {
+-    #[cfg(not(target_os = "vxworks"))]
++    #[cfg(all(not(target_os = "vxworks"), not(target_env = "newlib")))]
+     pub fn modified(&self) -> io::Result<SystemTime> {
+         Ok(SystemTime::from(libc::timespec {
+             tv_sec: self.stat.st_mtime as libc::time_t,
+@@ -305,7 +305,7 @@ impl FileAttr {
+         }))
+     }
+ 
+-    #[cfg(target_os = "vxworks")]
++    #[cfg(any(target_os = "vxworks", target_env = "newlib"))]
+     pub fn modified(&self) -> io::Result<SystemTime> {
+         Ok(SystemTime::from(libc::timespec {
+             tv_sec: self.stat.st_mtime as libc::time_t,
+@@ -313,7 +313,7 @@ impl FileAttr {
+         }))
+     }
+ 
+-    #[cfg(not(target_os = "vxworks"))]
++    #[cfg(all(not(target_os = "vxworks"), not(target_env = "newlib")))]
+     pub fn accessed(&self) -> io::Result<SystemTime> {
+         Ok(SystemTime::from(libc::timespec {
+             tv_sec: self.stat.st_atime as libc::time_t,
+@@ -321,7 +321,7 @@ impl FileAttr {
+         }))
+     }
+ 
+-    #[cfg(target_os = "vxworks")]
++    #[cfg(any(target_os = "vxworks", target_env = "newlib"))]
+     pub fn accessed(&self) -> io::Result<SystemTime> {
+         Ok(SystemTime::from(libc::timespec {
+             tv_sec: self.stat.st_atime as libc::time_t,
+@@ -594,7 +594,8 @@ impl DirEntry {
+         target_os = "l4re",
+         target_os = "fuchsia",
+         target_os = "redox",
+-        target_os = "vxworks"
++        target_os = "vxworks",
++        target_env = "newlib"
+     ))]
+     pub fn ino(&self) -> u64 {
+         self.entry.d_ino as u64
+@@ -633,7 +634,8 @@ impl DirEntry {
+         target_os = "emscripten",
+         target_os = "l4re",
+         target_os = "haiku",
+-        target_os = "vxworks"
++        target_os = "vxworks",
++        target_env = "newlib"
+     ))]
+     fn name_bytes(&self) -> &[u8] {
+         unsafe { CStr::from_ptr(self.entry.d_name.as_ptr()).to_bytes() }
+@@ -1082,7 +1084,7 @@ pub fn link(original: &Path, link: &Path) -> io::Result<()> {
+     let original = cstr(original)?;
+     let link = cstr(link)?;
+     cfg_if::cfg_if! {
+-        if #[cfg(any(target_os = "vxworks", target_os = "redox", target_os = "android"))] {
++        if #[cfg(any(target_os = "vxworks", target_os = "redox", target_os = "android", target_env = "newlib"))] {
+             // VxWorks, Redox, and old versions of Android lack `linkat`, so use
+             // `link` instead. POSIX leaves it implementation-defined whether
+             // `link` follows symlinks, so rely on the `symlink_hard_link` test
+@@ -1162,6 +1164,18 @@ fn open_from(from: &Path) -> io::Result<(crate::fs::File, crate::fs::Metadata)>
+     Ok((reader, metadata))
+ }
+ 
++#[cfg(target_os = "none")]
++fn open_to_and_set_permissions(
++    to: &Path,
++    reader_metadata: crate::fs::Metadata,
++) -> io::Result<(crate::fs::File, crate::fs::Metadata)> {
++    use crate::fs::OpenOptions;
++    let writer = OpenOptions::new().open(to)?;
++    let writer_metadata = writer.metadata()?;
++    Ok((writer, writer_metadata))
++}
++
++#[cfg(not(target_os = "none"))]
+ fn open_to_and_set_permissions(
+     to: &Path,
+     reader_metadata: crate::fs::Metadata,
+diff --git a/library/std/src/sys/unix/mod.rs b/library/std/src/sys/unix/mod.rs
+index 6c4fbaf2734..32c6817e4bf 100644
+--- a/library/std/src/sys/unix/mod.rs
++++ b/library/std/src/sys/unix/mod.rs
+@@ -5,11 +5,13 @@ use crate::io::ErrorKind;
+ pub use self::rand::hashmap_random_keys;
+ pub use libc::strlen;
+ 
++#[cfg(not(target_os = "none"))]
+ #[macro_use]
+ pub mod weak;
+ 
+ pub mod alloc;
+ pub mod android;
++#[cfg_attr(target_os = "none", path = "../unsupported/args.rs")]
+ pub mod args;
+ #[path = "../unix/cmath.rs"]
+ pub mod cmath;
+@@ -28,6 +30,8 @@ pub mod memchr;
+ pub mod mutex;
+ #[cfg(not(target_os = "l4re"))]
+ pub mod net;
++#[cfg(all(target_os = "none", target_env = "newlib", target_vendor = "espressif"))]
++mod net_lwip;
+ #[cfg(target_os = "l4re")]
+ pub use self::l4re::net;
+ pub mod os;
+@@ -35,6 +39,7 @@ pub mod path;
+ pub mod pipe;
+ pub mod process;
+ pub mod rand;
++#[cfg_attr(target_env = "newlib", path = "../wasm/rwlock_atomics.rs")]
+ pub mod rwlock;
+ pub mod stack_overflow;
+ pub mod stdio;
+@@ -45,6 +50,11 @@ pub mod time;
+ 
+ pub use crate::sys_common::os_str_bytes as os_str;
+ 
++#[cfg(all(not(test), target_os = "none"))]
++pub fn init(argc: isize, argv: *const *const u8) {
++}
++
++#[cfg(all(not(test), not(target_os = "none")))]
+ // SAFETY: must be called only once during runtime initialization.
+ // NOTE: this is not guaranteed to run, for example when Rust code is called externally.
+ pub unsafe fn init(argc: isize, argv: *const *const u8) {
+diff --git a/library/std/src/sys/unix/mutex.rs b/library/std/src/sys/unix/mutex.rs
+index 89c55eb859d..5461dbe145d 100644
+--- a/library/std/src/sys/unix/mutex.rs
++++ b/library/std/src/sys/unix/mutex.rs
+@@ -2,14 +2,33 @@ use crate::cell::UnsafeCell;
+ use crate::mem::MaybeUninit;
+ use crate::sys::cvt_nz;
+ 
++// The newlib definitions in libc for pthread_mutex_t and PTHREAD_MUTEX_INITIALIZER
++// are way off compared to what we have in ESP-IDF:
++// 1) ESP-IDF's pthread_mutex_t is only 4 bytes and not 40+ (because it is in fact a pointer to dynamically allocated structure)
++// 2) While the above is just a waste of space, ESP-IDF PTHREAD_MUTEX_INITIALIZER is the real issue:
++//    in libc it is defined as a series of 0s, while in ES-IDF it is equal to 0xffffffff
++#[cfg(all(target_os = "none", target_vendor = "espressif"))]
++pub type pthread_mutex_t = u32;
++#[cfg(all(target_os = "none", target_vendor = "espressif"))]
++pub type pthread_mutexattr_t = u64;
++#[cfg(all(target_os = "none", target_vendor = "espressif"))]
++const PTHREAD_MUTEX_INITIALIZER: pthread_mutex_t = 0xffffffff;
++
++#[cfg(not(all(target_os = "none", target_vendor = "espressif")))]
++pub type pthread_mutex_t = libc::pthread_mutex_t;
++#[cfg(not(all(target_os = "none", target_vendor = "espressif")))]
++pub type pthread_mutexattr_t = libc::pthread_mutexattr_t;
++#[cfg(not(all(target_os = "none", target_vendor = "espressif")))]
++const PTHREAD_MUTEX_INITIALIZER: pthread_mutex_t = libc::PTHREAD_MUTEX_INITIALIZER;
++
+ pub struct Mutex {
+-    inner: UnsafeCell<libc::pthread_mutex_t>,
++    inner: UnsafeCell<pthread_mutex_t>,
+ }
+ 
+ pub type MovableMutex = Box<Mutex>;
+ 
+ #[inline]
+-pub unsafe fn raw(m: &Mutex) -> *mut libc::pthread_mutex_t {
++pub unsafe fn raw(m: &Mutex) -> *mut pthread_mutex_t {
+     m.inner.get()
+ }
+ 
+@@ -23,7 +42,7 @@ impl Mutex {
+         // initialization of potentially opaque OS data before it landed.
+         // Be very careful using this newly constructed `Mutex`, reentrant
+         // locking is undefined behavior until `init` is called!
+-        Mutex { inner: UnsafeCell::new(libc::PTHREAD_MUTEX_INITIALIZER) }
++        Mutex { inner: UnsafeCell::new(PTHREAD_MUTEX_INITIALIZER) }
+     }
+     #[inline]
+     pub unsafe fn init(&mut self) {
+@@ -51,37 +70,37 @@ impl Mutex {
+         // references, we instead create the mutex with type
+         // PTHREAD_MUTEX_NORMAL which is guaranteed to deadlock if we try to
+         // re-lock it from the same thread, thus avoiding undefined behavior.
+-        let mut attr = MaybeUninit::<libc::pthread_mutexattr_t>::uninit();
+-        cvt_nz(libc::pthread_mutexattr_init(attr.as_mut_ptr())).unwrap();
++        let mut attr = MaybeUninit::<pthread_mutexattr_t>::uninit();
++        cvt_nz(libc::pthread_mutexattr_init(attr.as_mut_ptr() as *mut _)).unwrap();
+         let attr = PthreadMutexAttr(&mut attr);
+-        cvt_nz(libc::pthread_mutexattr_settype(attr.0.as_mut_ptr(), libc::PTHREAD_MUTEX_NORMAL))
++        cvt_nz(libc::pthread_mutexattr_settype(attr.0.as_mut_ptr() as *mut _, libc::PTHREAD_MUTEX_NORMAL))
+             .unwrap();
+-        cvt_nz(libc::pthread_mutex_init(self.inner.get(), attr.0.as_ptr())).unwrap();
++        cvt_nz(libc::pthread_mutex_init(self.inner.get() as *mut _, attr.0.as_ptr() as *mut _)).unwrap();
+     }
+     #[inline]
+     pub unsafe fn lock(&self) {
+-        let r = libc::pthread_mutex_lock(self.inner.get());
++        let r = libc::pthread_mutex_lock(self.inner.get() as *mut _);
+         debug_assert_eq!(r, 0);
+     }
+     #[inline]
+     pub unsafe fn unlock(&self) {
+-        let r = libc::pthread_mutex_unlock(self.inner.get());
++        let r = libc::pthread_mutex_unlock(self.inner.get() as *mut _);
+         debug_assert_eq!(r, 0);
+     }
+     #[inline]
+     pub unsafe fn try_lock(&self) -> bool {
+-        libc::pthread_mutex_trylock(self.inner.get()) == 0
++        libc::pthread_mutex_trylock(self.inner.get() as *mut _) == 0
+     }
+     #[inline]
+     #[cfg(not(target_os = "dragonfly"))]
+     pub unsafe fn destroy(&self) {
+-        let r = libc::pthread_mutex_destroy(self.inner.get());
++        let r = libc::pthread_mutex_destroy(self.inner.get() as *mut _);
+         debug_assert_eq!(r, 0);
+     }
+     #[inline]
+     #[cfg(target_os = "dragonfly")]
+     pub unsafe fn destroy(&self) {
+-        let r = libc::pthread_mutex_destroy(self.inner.get());
++        let r = libc::pthread_mutex_destroy(self.inner.get() as *mut _);
+         // On DragonFly pthread_mutex_destroy() returns EINVAL if called on a
+         // mutex that was just initialized with libc::PTHREAD_MUTEX_INITIALIZER.
+         // Once it is used (locked/unlocked) or pthread_mutex_init() is called,
+@@ -91,7 +110,7 @@ impl Mutex {
+ }
+ 
+ pub struct ReentrantMutex {
+-    inner: UnsafeCell<libc::pthread_mutex_t>,
++    inner: UnsafeCell<pthread_mutex_t>,
+ }
+ 
+ unsafe impl Send for ReentrantMutex {}
+@@ -99,45 +118,45 @@ unsafe impl Sync for ReentrantMutex {}
+ 
+ impl ReentrantMutex {
+     pub const unsafe fn uninitialized() -> ReentrantMutex {
+-        ReentrantMutex { inner: UnsafeCell::new(libc::PTHREAD_MUTEX_INITIALIZER) }
++        ReentrantMutex { inner: UnsafeCell::new(PTHREAD_MUTEX_INITIALIZER) }
+     }
+ 
+     pub unsafe fn init(&self) {
+-        let mut attr = MaybeUninit::<libc::pthread_mutexattr_t>::uninit();
+-        cvt_nz(libc::pthread_mutexattr_init(attr.as_mut_ptr())).unwrap();
++        let mut attr = MaybeUninit::<pthread_mutexattr_t>::uninit();
++        cvt_nz(libc::pthread_mutexattr_init(attr.as_mut_ptr() as *mut _)).unwrap();
+         let attr = PthreadMutexAttr(&mut attr);
+-        cvt_nz(libc::pthread_mutexattr_settype(attr.0.as_mut_ptr(), libc::PTHREAD_MUTEX_RECURSIVE))
++        cvt_nz(libc::pthread_mutexattr_settype(attr.0.as_mut_ptr() as *mut _, libc::PTHREAD_MUTEX_RECURSIVE))
+             .unwrap();
+-        cvt_nz(libc::pthread_mutex_init(self.inner.get(), attr.0.as_ptr())).unwrap();
++        cvt_nz(libc::pthread_mutex_init(self.inner.get() as *mut _, attr.0.as_ptr() as *mut _)).unwrap();
+     }
+ 
+     pub unsafe fn lock(&self) {
+-        let result = libc::pthread_mutex_lock(self.inner.get());
++        let result = libc::pthread_mutex_lock(self.inner.get() as *mut _);
+         debug_assert_eq!(result, 0);
+     }
+ 
+     #[inline]
+     pub unsafe fn try_lock(&self) -> bool {
+-        libc::pthread_mutex_trylock(self.inner.get()) == 0
++        libc::pthread_mutex_trylock(self.inner.get() as *mut _) == 0
+     }
+ 
+     pub unsafe fn unlock(&self) {
+-        let result = libc::pthread_mutex_unlock(self.inner.get());
++        let result = libc::pthread_mutex_unlock(self.inner.get() as *mut _);
+         debug_assert_eq!(result, 0);
+     }
+ 
+     pub unsafe fn destroy(&self) {
+-        let result = libc::pthread_mutex_destroy(self.inner.get());
++        let result = libc::pthread_mutex_destroy(self.inner.get() as *mut _);
+         debug_assert_eq!(result, 0);
+     }
+ }
+ 
+-struct PthreadMutexAttr<'a>(&'a mut MaybeUninit<libc::pthread_mutexattr_t>);
++struct PthreadMutexAttr<'a>(&'a mut MaybeUninit<pthread_mutexattr_t>);
+ 
+ impl Drop for PthreadMutexAttr<'_> {
+     fn drop(&mut self) {
+         unsafe {
+-            let result = libc::pthread_mutexattr_destroy(self.0.as_mut_ptr());
++            let result = libc::pthread_mutexattr_destroy(self.0.as_mut_ptr() as *mut _);
+             debug_assert_eq!(result, 0);
+         }
+     }
+diff --git a/library/std/src/sys/unix/net.rs b/library/std/src/sys/unix/net.rs
+index e6b61062d15..cd7aa24ff6b 100644
+--- a/library/std/src/sys/unix/net.rs
++++ b/library/std/src/sys/unix/net.rs
+@@ -9,7 +9,7 @@ use crate::sys_common::net::{getsockopt, setsockopt, sockaddr_to_addr};
+ use crate::sys_common::{AsInner, FromInner, IntoInner};
+ use crate::time::{Duration, Instant};
+ 
+-use libc::{c_int, c_void, size_t, sockaddr, socklen_t, EAI_SYSTEM, MSG_PEEK};
++use libc::{c_int, c_void, size_t, sockaddr, socklen_t, MSG_PEEK};
+ 
+ pub use crate::sys::{cvt, cvt_r};
+ 
+@@ -30,13 +30,19 @@ pub fn cvt_gai(err: c_int) -> io::Result<()> {
+     // We may need to trigger a glibc workaround. See on_resolver_failure() for details.
+     on_resolver_failure();
+ 
+-    if err == EAI_SYSTEM {
++    #[cfg(not(all(target_os = "none", target_env = "newlib", target_vendor = "espressif")))]
++    if err == libc::EAI_SYSTEM {
+         return Err(io::Error::last_os_error());
+     }
+ 
++    #[cfg(not(all(target_os = "none", target_env = "newlib", target_vendor = "espressif")))]
+     let detail = unsafe {
+         str::from_utf8(CStr::from_ptr(libc::gai_strerror(err)).to_bytes()).unwrap().to_owned()
+     };
++
++    #[cfg(all(target_os = "none", target_env = "newlib", target_vendor = "espressif"))]
++    let detail = "";
++
+     Err(io::Error::new(
+         io::ErrorKind::Other,
+         &format!("failed to lookup address information: {}", detail)[..],
+diff --git a/library/std/src/sys/unix/net_lwip.rs b/library/std/src/sys/unix/net_lwip.rs
+new file mode 100644
+index 00000000000..e65ea3e015d
+--- /dev/null
++++ b/library/std/src/sys/unix/net_lwip.rs
+@@ -0,0 +1,304 @@
++// A set of definitions useful for bare metal platforms, where the LwIP stack is compiled with the "lwip_"-prefixed function variants
++// The ESP-IDF SDK of Espressif is one such example
++
++use libc::*;
++
++extern "C" {
++    fn lwip_accept(
++        s: libc::c_int,
++        addr: *mut libc::sockaddr,
++        addrlen: *mut libc::socklen_t,
++    ) -> libc::c_int;
++    fn lwip_bind(
++        s: libc::c_int,
++        name: *const libc::sockaddr,
++        namelen: libc::socklen_t,
++    ) -> libc::c_int;
++    fn lwip_shutdown(s: libc::c_int, how: libc::c_int) -> libc::c_int;
++
++    fn lwip_getpeername(
++        s: libc::c_int,
++        name: *const libc::sockaddr,
++        namelen: libc::socklen_t,
++    ) -> libc::c_int;
++    fn lwip_getsockname(
++        s: libc::c_int,
++        name: *const libc::sockaddr,
++        namelen: libc::socklen_t,
++    ) -> libc::c_int;
++
++    fn lwip_setsockopt(
++        s: libc::c_int,
++        level: libc::c_int,
++        optname: libc::c_int,
++        opval: *const libc::c_void,
++        optlen: libc::socklen_t,
++    ) -> libc::c_int;
++    fn lwip_getsockopt(
++        s: libc::c_int,
++        level: libc::c_int,
++        optname: libc::c_int,
++        opval: *mut libc::c_void,
++        optlen: *mut libc::socklen_t,
++    ) -> libc::c_int;
++
++    fn lwip_close(s: libc::c_int) -> libc::c_int;
++
++    fn lwip_connect(
++        s: libc::c_int,
++        name: *const libc::sockaddr,
++        namelen: libc::socklen_t,
++    ) -> libc::c_int;
++    fn lwip_listen(s: libc::c_int, backlog: libc::c_int) -> libc::c_int;
++
++    fn lwip_recvmsg(
++        sockfd: libc::c_int,
++        msg: *mut libc::msghdr,
++        flags: libc::c_int,
++    ) -> libc::size_t;
++    fn lwip_recv(
++        s: libc::c_int,
++        mem: *mut libc::c_void,
++        len: libc::size_t,
++        flags: libc::c_int,
++    ) -> libc::size_t;
++    fn lwip_recvfrom(
++        s: libc::c_int,
++        mem: *mut libc::c_void,
++        len: libc::size_t,
++        flags: libc::c_int,
++        from: *mut libc::sockaddr,
++        fromlen: *mut libc::socklen_t,
++    ) -> libc::size_t;
++
++    fn lwip_send(
++        s: libc::c_int,
++        dataptr: *const libc::c_void,
++        size: libc::size_t,
++        flags: libc::c_int,
++    ) -> libc::size_t;
++    fn lwip_sendmsg(
++        s: libc::c_int,
++        message: *const libc::msghdr,
++        flags: libc::c_int,
++    ) -> libc::size_t;
++    fn lwip_sendto(
++        s: libc::c_int,
++        dataptr: *const libc::c_void,
++        size: libc::size_t,
++        flags: libc::c_int,
++        to: *const libc::sockaddr,
++        tolen: libc::socklen_t,
++    ) -> libc::size_t;
++
++    fn lwip_socket(domain: libc::c_int, typest: libc::c_int, protocol: libc::c_int) -> libc::c_int;
++    fn lwip_select(
++        maxfdp1: libc::c_int,
++        readset: *mut libc::fd_set,
++        writeset: *mut libc::fd_set,
++        exceptset: *mut libc::fd_set,
++        timeout: *mut libc::timeval,
++    ) -> libc::c_int;
++    fn lwip_ioctl(s: libc::c_int, cmd: libc::c_long, argp: *mut libc::c_void) -> libc::c_int;
++
++    fn lwip_gethostbyname_r(
++        name: *const libc::c_char,
++        ret: *mut libc::hostent,
++        buf: *mut libc::c_char,
++        buflen: libc::size_t,
++        result: *mut *mut libc::hostent,
++        h_errnop: *mut libc::c_int,
++    ) -> libc::c_int;
++    fn lwip_gethostbyname(name: *const libc::c_char) -> *mut libc::hostent;
++
++    fn lwip_freeaddrinfo(ai: *mut libc::addrinfo) -> libc::c_void;
++    fn lwip_getaddrinfo(
++        nodename: *const libc::c_char,
++        servname: *const libc::c_char,
++        hints: *const libc::addrinfo,
++        res: *mut *mut libc::addrinfo,
++    ) -> libc::c_int;
++}
++
++#[no_mangle]
++pub extern "C" fn accept(
++    s: libc::c_int,
++    addr: *mut libc::sockaddr,
++    addrlen: *mut libc::socklen_t,
++) -> libc::c_int {
++    unsafe { lwip_accept(s, addr, addrlen) }
++}
++#[no_mangle]
++pub extern "C" fn bind(
++    s: libc::c_int,
++    name: *const libc::sockaddr,
++    namelen: libc::socklen_t,
++) -> libc::c_int {
++    unsafe { lwip_bind(s, name, namelen) }
++}
++#[no_mangle]
++pub extern "C" fn shutdown(s: libc::c_int, how: libc::c_int) -> libc::c_int {
++    unsafe { lwip_shutdown(s, how) }
++}
++
++#[no_mangle]
++pub extern "C" fn getpeername(
++    s: libc::c_int,
++    name: *const libc::sockaddr,
++    namelen: libc::socklen_t,
++) -> libc::c_int {
++    unsafe { lwip_getpeername(s, name, namelen) }
++}
++#[no_mangle]
++pub extern "C" fn getsockname(
++    s: libc::c_int,
++    name: *const libc::sockaddr,
++    namelen: libc::socklen_t,
++) -> libc::c_int {
++    unsafe { lwip_getsockname(s, name, namelen) }
++}
++
++#[no_mangle]
++pub extern "C" fn setsockopt(
++    s: libc::c_int,
++    level: libc::c_int,
++    optname: libc::c_int,
++    opval: *const libc::c_void,
++    optlen: libc::socklen_t,
++) -> libc::c_int {
++    unsafe { lwip_setsockopt(s, level, optname, opval, optlen) }
++}
++#[no_mangle]
++pub extern "C" fn getsockopt(
++    s: libc::c_int,
++    level: libc::c_int,
++    optname: libc::c_int,
++    opval: *mut libc::c_void,
++    optlen: *mut libc::socklen_t,
++) -> libc::c_int {
++    unsafe { lwip_getsockopt(s, level, optname, opval, optlen) }
++}
++
++#[no_mangle]
++pub extern "C" fn closesocket(s: libc::c_int) -> libc::c_int {
++    unsafe { lwip_close(s) }
++}
++
++#[no_mangle]
++pub extern "C" fn connect(
++    s: libc::c_int,
++    name: *const libc::sockaddr,
++    namelen: libc::socklen_t,
++) -> libc::c_int {
++    unsafe { lwip_connect(s, name, namelen) }
++}
++#[no_mangle]
++pub extern "C" fn listen(s: libc::c_int, backlog: libc::c_int) -> libc::c_int {
++    unsafe { lwip_listen(s, backlog) }
++}
++
++#[no_mangle]
++pub extern "C" fn recvmsg(
++    sockfd: libc::c_int,
++    msg: *mut libc::msghdr,
++    flags: libc::c_int,
++) -> libc::size_t {
++    unsafe { lwip_recvmsg(sockfd, msg, flags) }
++}
++#[no_mangle]
++pub extern "C" fn recv(
++    s: libc::c_int,
++    mem: *mut libc::c_void,
++    len: libc::size_t,
++    flags: libc::c_int,
++) -> libc::size_t {
++    unsafe { lwip_recv(s, mem, len, flags) }
++}
++#[no_mangle]
++pub extern "C" fn recvfrom(
++    s: libc::c_int,
++    mem: *mut libc::c_void,
++    len: libc::size_t,
++    flags: libc::c_int,
++    from: *mut libc::sockaddr,
++    fromlen: *mut libc::socklen_t,
++) -> libc::size_t {
++    unsafe { lwip_recvfrom(s, mem, len, flags, from, fromlen) }
++}
++
++#[no_mangle]
++pub extern "C" fn send(
++    s: libc::c_int,
++    dataptr: *const libc::c_void,
++    size: libc::size_t,
++    flags: libc::c_int,
++) -> libc::size_t {
++    unsafe { lwip_send(s, dataptr, size, flags) }
++}
++#[no_mangle]
++pub extern "C" fn sendmsg(
++    s: libc::c_int,
++    message: *const libc::msghdr,
++    flags: libc::c_int,
++) -> libc::size_t {
++    unsafe { lwip_sendmsg(s, message, flags) }
++}
++#[no_mangle]
++pub extern "C" fn sendto(
++    s: libc::c_int,
++    dataptr: *const libc::c_void,
++    size: libc::size_t,
++    flags: libc::c_int,
++    to: *const libc::sockaddr,
++    tolen: libc::socklen_t,
++) -> libc::size_t {
++    unsafe { lwip_sendto(s, dataptr, size, flags, to, tolen) }
++}
++
++#[no_mangle]
++pub extern "C" fn socket(
++    domain: libc::c_int,
++    typest: libc::c_int,
++    protocol: libc::c_int,
++) -> libc::c_int {
++    unsafe { lwip_socket(domain, typest, protocol) }
++}
++// Defined by ESP-IDF #[no_mangle] pub extern "C" fn select(maxfdp1: libc::c_int, readset: *mut libc::fd_set, writeset: *mut libc::fd_set, exceptset: *mut libc::fd_set, timeout: *mut libc::timeval) -> libc::c_int {unsafe {lwip_select(maxfdp1, readset, writeset, exceptset, timeout)}}
++#[no_mangle]
++pub extern "C" fn ioctlsocket(
++    s: libc::c_int,
++    cmd: libc::c_long,
++    argp: *mut libc::c_void,
++) -> libc::c_int {
++    unsafe { lwip_ioctl(s, cmd, argp) }
++}
++
++#[no_mangle]
++pub extern "C" fn gethostbyname_r(
++    name: *const libc::c_char,
++    ret: *mut libc::hostent,
++    buf: *mut libc::c_char,
++    buflen: libc::size_t,
++    result: *mut *mut libc::hostent,
++    h_errnop: *mut libc::c_int,
++) -> libc::c_int {
++    unsafe { lwip_gethostbyname_r(name, ret, buf, buflen, result, h_errnop) }
++}
++#[no_mangle]
++pub extern "C" fn gethostbyname(name: *const libc::c_char) -> *mut libc::hostent {
++    unsafe { lwip_gethostbyname(name) }
++}
++
++#[no_mangle]
++pub extern "C" fn freeaddrinfo(ai: *mut libc::addrinfo) -> libc::c_void {
++    unsafe { lwip_freeaddrinfo(ai) }
++}
++#[no_mangle]
++pub extern "C" fn getaddrinfo(
++    nodename: *const libc::c_char,
++    servname: *const libc::c_char,
++    hints: *const libc::addrinfo,
++    res: *mut *mut libc::addrinfo,
++) -> libc::c_int {
++    unsafe { lwip_getaddrinfo(nodename, servname, hints, res) }
++}
+diff --git a/library/std/src/sys/unix/os.rs b/library/std/src/sys/unix/os.rs
+index 984c08c2ad5..ac236f007c0 100644
+--- a/library/std/src/sys/unix/os.rs
++++ b/library/std/src/sys/unix/os.rs
+@@ -20,12 +20,19 @@ use crate::slice;
+ use crate::str;
+ use crate::sys::cvt;
+ use crate::sys::fd;
+-use crate::sys::rwlock::{RWLockReadGuard, StaticRWLock};
++#[cfg(not(all(target_os = "none", target_vendor = "espressif")))]
++use crate::sys::rwlock::{RWLockWriteGuard, RWLockReadGuard, StaticRWLock};
++#[cfg(all(target_os = "none", target_vendor = "espressif"))] // No RW locks in ESP-IDF yet
+ use crate::sys_common::mutex::{StaticMutex, StaticMutexGuard};
+ use crate::vec;
+ 
+ use libc::{c_char, c_int, c_void};
+ 
++#[cfg(all(target_os = "none", target_vendor = "espressif"))]
++#[path = "../unsupported/common.rs"]
++#[deny(unsafe_op_in_unsafe_fn)]
++mod unsupported;
++
+ const TMPBUF_SZ: usize = 128;
+ 
+ cfg_if::cfg_if! {
+@@ -126,6 +133,12 @@ pub fn error_string(errno: i32) -> String {
+     }
+ }
+ 
++#[cfg(all(target_os = "none", target_vendor = "espressif"))]
++pub fn getcwd() -> io::Result<PathBuf> {
++    Ok(PathBuf::from("/"))
++}
++
++#[cfg(not(all(target_os = "none", target_vendor = "espressif")))]
+ pub fn getcwd() -> io::Result<PathBuf> {
+     let mut buf = Vec::with_capacity(512);
+     loop {
+@@ -152,6 +165,12 @@ pub fn getcwd() -> io::Result<PathBuf> {
+     }
+ }
+ 
++#[cfg(all(target_os = "none", target_vendor = "espressif"))]
++pub fn chdir(p: &path::Path) -> io::Result<()> {
++    Err(unsupported::unsupported_err())
++}
++
++#[cfg(not(all(target_os = "none", target_vendor = "espressif")))]
+ pub fn chdir(p: &path::Path) -> io::Result<()> {
+     let p: &OsStr = p.as_ref();
+     let p = CString::new(p.as_bytes())?;
+@@ -457,6 +476,11 @@ pub fn current_exe() -> io::Result<PathBuf> {
+     path.canonicalize()
+ }
+ 
++#[cfg(all(target_os = "none", target_vendor = "espressif"))]
++pub fn current_exe() -> io::Result<PathBuf> {
++    unsupported::unsupported()
++}
++
+ pub struct Env {
+     iter: vec::IntoIter<(OsString, OsString)>,
+ }
+@@ -490,12 +514,32 @@ pub unsafe fn environ() -> *mut *const *const c_char {
+     ptr::addr_of_mut!(environ)
+ }
+ 
++#[cfg(not(all(target_os = "none", target_vendor = "espressif")))]
+ static ENV_LOCK: StaticRWLock = StaticRWLock::new();
+ 
++#[cfg(not(all(target_os = "none", target_vendor = "espressif")))]
++pub fn env_write_lock() -> RWLockWriteGuard {
++    ENV_LOCK.write_with_guard()
++}
++
++#[cfg(not(all(target_os = "none", target_vendor = "espressif")))]
+ pub fn env_read_lock() -> RWLockReadGuard {
+     ENV_LOCK.read_with_guard()
+ }
+ 
++#[cfg(all(target_os = "none", target_vendor = "espressif"))]
++static ENV_LOCK: StaticMutex = StaticMutex::new();
++
++#[cfg(all(target_os = "none", target_vendor = "espressif"))]
++pub unsafe fn env_write_lock() -> StaticMutexGuard {
++    ENV_LOCK.lock()
++}
++
++#[cfg(all(target_os = "none", target_vendor = "espressif"))]
++pub unsafe fn env_read_lock() -> StaticMutexGuard {
++    ENV_LOCK.lock()
++}
++
+ /// Returns a vector of (variable, value) byte-vector pairs for all the
+ /// environment variables of the current process.
+ pub fn env() -> Env {
+@@ -553,7 +597,7 @@ pub fn setenv(k: &OsStr, v: &OsStr) -> io::Result<()> {
+     let v = CString::new(v.as_bytes())?;
+ 
+     unsafe {
+-        let _guard = ENV_LOCK.write_with_guard();
++        let _guard = env_write_lock();
+         cvt(libc::setenv(k.as_ptr(), v.as_ptr(), 1)).map(drop)
+     }
+ }
+@@ -562,15 +606,21 @@ pub fn unsetenv(n: &OsStr) -> io::Result<()> {
+     let nbuf = CString::new(n.as_bytes())?;
+ 
+     unsafe {
+-        let _guard = ENV_LOCK.write_with_guard();
++        let _guard = env_write_lock();
+         cvt(libc::unsetenv(nbuf.as_ptr())).map(drop)
+     }
+ }
+ 
++#[cfg(not(target_os = "none"))]
+ pub fn page_size() -> usize {
+     unsafe { libc::sysconf(libc::_SC_PAGESIZE) as usize }
+ }
+ 
++#[cfg(target_os = "none")]
++pub fn page_size() -> usize {
++    32
++}
++
+ pub fn temp_dir() -> PathBuf {
+     crate::env::var_os("TMPDIR").map(PathBuf::from).unwrap_or_else(|| {
+         if cfg!(target_os = "android") {
+@@ -585,6 +635,7 @@ pub fn home_dir() -> Option<PathBuf> {
+     return crate::env::var_os("HOME").or_else(|| unsafe { fallback() }).map(PathBuf::from);
+ 
+     #[cfg(any(
++        target_os = "none",
+         target_os = "android",
+         target_os = "ios",
+         target_os = "emscripten",
+@@ -595,6 +646,7 @@ pub fn home_dir() -> Option<PathBuf> {
+         None
+     }
+     #[cfg(not(any(
++        target_os = "none",
+         target_os = "android",
+         target_os = "ios",
+         target_os = "emscripten",
+diff --git a/library/std/src/sys/unix/process/mod.rs b/library/std/src/sys/unix/process/mod.rs
+index f67c70c0177..6560a3333bd 100644
+--- a/library/std/src/sys/unix/process/mod.rs
++++ b/library/std/src/sys/unix/process/mod.rs
+@@ -13,6 +13,9 @@ cfg_if::cfg_if! {
+     } else if #[cfg(target_os = "vxworks")] {
+         #[path = "process_vxworks.rs"]
+         mod process_inner;
++    } else if #[cfg(target_os = "none")] {
++        #[path = "process_none.rs"]
++        mod process_inner;
+     } else {
+         #[path = "process_unix.rs"]
+         mod process_inner;
+diff --git a/library/std/src/sys/unix/process/process_none.rs b/library/std/src/sys/unix/process/process_none.rs
+new file mode 100644
+index 00000000000..1e06a45ca64
+--- /dev/null
++++ b/library/std/src/sys/unix/process/process_none.rs
+@@ -0,0 +1,105 @@
++use crate::fmt;
++use crate::io;
++use crate::sys::pipe::AnonPipe;
++
++use crate::sys;
++use crate::sys::cvt;
++use crate::sys::process::process_common::*;
++
++use crate::io as std_io;
++
++use libc::{c_int, pid_t};
++
++#[path = "../../unsupported/common.rs"]
++#[deny(unsafe_op_in_unsafe_fn)]
++mod unsupported;
++
++////////////////////////////////////////////////////////////////////////////////
++// Command
++////////////////////////////////////////////////////////////////////////////////
++
++impl Command {
++    pub fn spawn(
++        &mut self,
++        default: Stdio,
++        needs_stdin: bool,
++    ) -> io::Result<(Process, StdioPipes)> {
++        unsupported::unsupported()
++    }
++
++    pub fn exec(&mut self, default: Stdio) -> io::Error {
++        unsupported::unsupported_err()
++    }
++}
++
++////////////////////////////////////////////////////////////////////////////////
++// Processes
++////////////////////////////////////////////////////////////////////////////////
++
++pub struct Process {
++    handle: pid_t,
++}
++
++impl Process {
++    pub fn id(&self) -> u32 {
++        0
++    }
++
++    pub fn kill(&mut self) -> io::Result<()> {
++        unsupported::unsupported()
++    }
++
++    pub fn wait(&mut self) -> io::Result<ExitStatus> {
++        unsupported::unsupported()
++    }
++
++    pub fn try_wait(&mut self) -> io::Result<Option<ExitStatus>> {
++        unsupported::unsupported()
++    }
++}
++
++#[derive(PartialEq, Eq, Clone, Copy, Debug)]
++pub struct ExitStatus(i32);
++
++impl ExitStatus {
++    pub fn success(&self) -> bool {
++        self.code() == Some(0)
++    }
++
++    pub fn code(&self) -> Option<i32> {
++        None
++    }
++
++    pub fn signal(&self) -> Option<i32> {
++        None
++    }
++
++    pub fn core_dumped(&self) -> bool {
++        false
++    }
++
++    pub fn stopped_signal(&self) -> Option<i32> {
++        None
++    }
++
++    pub fn continued(&self) -> bool {
++        false
++    }
++
++    pub fn into_raw(&self) -> c_int {
++        0
++    }
++}
++
++/// Converts a raw `c_int` to a type-safe `ExitStatus` by wrapping it without copying.
++impl From<c_int> for ExitStatus {
++    fn from(a: c_int) -> ExitStatus {
++        ExitStatus(a as i32)
++    }
++}
++
++impl fmt::Display for ExitStatus {
++    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
++        write!(f, "exit code: {}", self.0)
++    }
++}
+diff --git a/library/std/src/sys/unix/rand.rs b/library/std/src/sys/unix/rand.rs
+index 44f9eabc319..7929d56d12f 100644
+--- a/library/std/src/sys/unix/rand.rs
++++ b/library/std/src/sys/unix/rand.rs
+@@ -41,7 +41,24 @@ mod imp {
+         unsafe { getrandom(buf.as_mut_ptr().cast(), buf.len(), libc::GRND_NONBLOCK) }
+     }
+ 
+-    #[cfg(not(any(target_os = "linux", target_os = "android")))]
++    #[cfg(all(target_os = "none", target_vendor = "espressif"))]
++    fn getrandom_fill_bytes(buf: &mut [u8]) -> bool {
++        extern "C" {
++            fn esp_fill_random(buf: *mut libc::c_void, len: libc::size_t) -> libc::c_void;
++        }
++
++        unsafe {
++            esp_fill_random(buf.as_mut_ptr() as *mut libc::c_void, buf.len());
++        }
++
++        true // TODO: Return false if ESP32's WiFi or Bluetooth is not initialized
++    }
++
++    #[cfg(not(any(
++        target_os = "linux",
++        target_os = "android",
++        all(target_os = "none", target_vendor = "espressif")
++    )))]
+     fn getrandom_fill_bytes(_buf: &mut [u8]) -> bool {
+         false
+     }
+diff --git a/library/std/src/sys/unix/thread.rs b/library/std/src/sys/unix/thread.rs
+index b8f43caec32..0f9d15d39b1 100644
+--- a/library/std/src/sys/unix/thread.rs
++++ b/library/std/src/sys/unix/thread.rs
+@@ -6,12 +6,14 @@ use crate::ptr;
+ use crate::sys::{os, stack_overflow};
+ use crate::time::Duration;
+ 
+-#[cfg(not(any(target_os = "l4re", target_os = "vxworks")))]
++#[cfg(not(any(target_os = "l4re", target_os = "vxworks", target_os = "none")))]
+ pub const DEFAULT_MIN_STACK_SIZE: usize = 2 * 1024 * 1024;
+ #[cfg(target_os = "l4re")]
+ pub const DEFAULT_MIN_STACK_SIZE: usize = 1024 * 1024;
+ #[cfg(target_os = "vxworks")]
+ pub const DEFAULT_MIN_STACK_SIZE: usize = 256 * 1024;
++#[cfg(target_os = "none")]
++pub const DEFAULT_MIN_STACK_SIZE: usize = 5 * 1024;
+ 
+ pub struct Thread {
+     id: libc::pthread_t,
+@@ -32,22 +34,51 @@ impl Thread {
+ 
+         let stack_size = cmp::max(stack, min_stack_size(&attr));
+ 
+-        match libc::pthread_attr_setstacksize(&mut attr, stack_size) {
+-            0 => {}
+-            n => {
+-                assert_eq!(n, libc::EINVAL);
+-                // EINVAL means |stack_size| is either too small or not a
+-                // multiple of the system page size.  Because it's definitely
+-                // >= PTHREAD_STACK_MIN, it must be an alignment issue.
+-                // Round up to the nearest page and try again.
+-                let page_size = os::page_size();
+-                let stack_size =
+-                    (stack_size + page_size - 1) & (-(page_size as isize - 1) as usize - 1);
+-                assert_eq!(libc::pthread_attr_setstacksize(&mut attr, stack_size), 0);
+-            }
+-        };
++        let stack_size_res = libc::pthread_attr_setstacksize(&mut attr, stack_size);
++
++        if cfg!(target_env = "newlib") {
++            assert_eq!(stack_size_res, 0);
++        } else {
++            match stack_size_res {
++                0 => {}
++                n => {
++                    #[cfg(not(target_env = "newlib"))]
++                    use os::page_size;
++
++                    #[cfg(target_env = "newlib")]
++                    fn page_size() -> usize {
++                        unreachable!()
++                    }
++
++                    assert_eq!(n, libc::EINVAL);
++                    // EINVAL means |stack_size| is either too small or not a
++                    // multiple of the system page size.  Because it's definitely
++                    // >= PTHREAD_STACK_MIN, it must be an alignment issue.
++                    // Round up to the nearest page and try again.
++                    let page_size = page_size();
++                    let stack_size =
++                        (stack_size + page_size - 1) & (-(page_size as isize - 1) as usize - 1);
++                    assert_eq!(libc::pthread_attr_setstacksize(&mut attr, stack_size), 0);
++                }
++            };
++        }
+ 
+-        let ret = libc::pthread_create(&mut native, &attr, thread_start, p as *mut _);
++        // This hack is necessary because currently libc does not expose the
++        // pthread_create symbol under newlib
++        // TODO: File a pull request against libc
++        #[cfg(target_env = "newlib")]
++        extern "C" {
++            fn pthread_create(
++                native: *mut libc::pthread_t,
++                attr: *const libc::pthread_attr_t,
++                f: extern "C" fn(_: *mut libc::c_void) -> *mut libc::c_void,
++                value: *mut libc::c_void,
++            ) -> libc::c_int;
++        }
++        #[cfg(not(target_env = "newlib"))]
++        use libc::pthread_create;
++
++        let ret = pthread_create(&mut native, &attr, thread_start, p as *mut _);
+         // Note: if the thread creation fails and this assert fails, then p will
+         // be leaked. However, an alternative design could cause double-free
+         // which is clearly worse.
+@@ -147,6 +178,7 @@ impl Thread {
+         // FIXME: determine whether Fuchsia has a way to set a thread name.
+     }
+ 
++    #[cfg(not(target_env = "newlib"))]
+     pub fn sleep(dur: Duration) {
+         let mut secs = dur.as_secs();
+         let mut nsecs = dur.subsec_nanos() as _;
+@@ -172,6 +204,19 @@ impl Thread {
+         }
+     }
+ 
++    #[cfg(target_env = "newlib")]
++    pub fn sleep(dur: Duration) {
++        let mut micros = dur.as_micros();
++        unsafe {
++            while micros > 0 {
++                let st = if micros > u32::MAX as u128 { u32::MAX } else { micros as u32 };
++                libc::usleep(st);
++
++                micros -= st as u128;
++            }
++        }
++    }
++
+     pub fn join(self) {
+         unsafe {
+             let ret = libc::pthread_join(self.id, ptr::null_mut());
+@@ -471,7 +516,7 @@ fn min_stack_size(attr: *const libc::pthread_attr_t) -> usize {
+ 
+ // No point in looking up __pthread_get_minstack() on non-glibc
+ // platforms.
+-#[cfg(all(not(target_os = "linux"), not(target_os = "netbsd")))]
++#[cfg(all(not(target_os = "linux"), not(target_os = "netbsd"), not(target_os = "none")))]
+ fn min_stack_size(_: *const libc::pthread_attr_t) -> usize {
+     libc::PTHREAD_STACK_MIN
+ }
+@@ -480,3 +525,8 @@ fn min_stack_size(_: *const libc::pthread_attr_t) -> usize {
+ fn min_stack_size(_: *const libc::pthread_attr_t) -> usize {
+     2048 // just a guess
+ }
++
++#[cfg(target_os = "none")]
++fn min_stack_size(_: *const libc::pthread_attr_t) -> usize {
++    512 // just a guess
++}
+diff --git a/library/std/src/sys/unix/time.rs b/library/std/src/sys/unix/time.rs
+index 23a5c81c005..378836637ec 100644
+--- a/library/std/src/sys/unix/time.rs
++++ b/library/std/src/sys/unix/time.rs
+@@ -361,9 +361,9 @@ mod inner {
+         }
+     }
+ 
+-    #[cfg(not(target_os = "dragonfly"))]
++    #[cfg(not(any(target_os = "dragonfly", target_env = "newlib")))]
+     pub type clock_t = libc::c_int;
+-    #[cfg(target_os = "dragonfly")]
++    #[cfg(any(target_os = "dragonfly", target_env = "newlib"))]
+     pub type clock_t = libc::c_ulong;
+ 
+     fn now(clock: clock_t) -> Timespec {
+diff --git a/library/std/src/sys/unsupported/args.rs b/library/std/src/sys/unsupported/args.rs
+index a2d75a61976..728b02ebf60 100644
+--- a/library/std/src/sys/unsupported/args.rs
++++ b/library/std/src/sys/unsupported/args.rs
+@@ -34,3 +34,7 @@ impl DoubleEndedIterator for Args {
+         None
+     }
+ }
++
++/// One-time global cleanup.
++pub unsafe fn cleanup() {
++}
+diff --git a/library/std/src/sys/wasm/rwlock_atomics.rs b/library/std/src/sys/wasm/rwlock_atomics.rs
+index 06442e925f4..d9fe0cfbecf 100644
+--- a/library/std/src/sys/wasm/rwlock_atomics.rs
++++ b/library/std/src/sys/wasm/rwlock_atomics.rs
+@@ -4,7 +4,8 @@ use crate::sys::mutex::Mutex;
+ 
+ pub struct RWLock {
+     lock: Mutex,
+-    cond: Condvar,
++    cond: UnsafeCell<Condvar>,
++    initialized: UnsafeCell<bool>,
+     state: UnsafeCell<State>,
+ }
+ 
+@@ -26,15 +27,34 @@ unsafe impl Sync for RWLock {}
+ // the future.
+ 
+ impl RWLock {
++    #[cfg(all(target_os = "none", target_vendor = "espressif"))]
+     pub const fn new() -> RWLock {
+-        RWLock { lock: Mutex::new(), cond: Condvar::new(), state: UnsafeCell::new(State::Unlocked) }
++        // NOTE: ESP-IDF's PTHREAD_COND_INITIALIZER support is not released yet
++        // So on that platform we need to manually initialize
++        RWLock {
++            lock: Mutex::new(),
++            cond: UnsafeCell::new(Condvar::new()),
++            initialized: UnsafeCell::new(false),
++            state: UnsafeCell::new(State::Unlocked),
++        }
++    }
++
++    #[cfg(not(all(target_os = "none", target_vendor = "espressif")))]
++    pub const fn new() -> RWLock {
++        RWLock {
++            lock: Mutex::new(),
++            cond: UnsafeCell::new(Condvar::new()),
++            initialized: UnsafeCell::new(true),
++            state: UnsafeCell::new(State::Unlocked),
++        }
+     }
+ 
+     #[inline]
+     pub unsafe fn read(&self) {
+         self.lock.lock();
++        self.initialize();
+         while !(*self.state.get()).inc_readers() {
+-            self.cond.wait(&self.lock);
++            (*self.cond.get()).wait(&self.lock);
+         }
+         self.lock.unlock();
+     }
+@@ -50,8 +70,9 @@ impl RWLock {
+     #[inline]
+     pub unsafe fn write(&self) {
+         self.lock.lock();
++        self.initialize();
+         while !(*self.state.get()).inc_writers() {
+-            self.cond.wait(&self.lock);
++            (*self.cond.get()).wait(&self.lock);
+         }
+         self.lock.unlock();
+     }
+@@ -67,27 +88,42 @@ impl RWLock {
+     #[inline]
+     pub unsafe fn read_unlock(&self) {
+         self.lock.lock();
++        self.initialize();
+         let notify = (*self.state.get()).dec_readers();
+         self.lock.unlock();
+         if notify {
+             // FIXME: should only wake up one of these some of the time
+-            self.cond.notify_all();
++            (*self.cond.get()).notify_all();
+         }
+     }
+ 
+     #[inline]
+     pub unsafe fn write_unlock(&self) {
+         self.lock.lock();
++        self.initialize();
+         (*self.state.get()).dec_writers();
+         self.lock.unlock();
+         // FIXME: should only wake up one of these some of the time
+-        self.cond.notify_all();
++        (*self.cond.get()).notify_all();
+     }
+ 
+     #[inline]
+     pub unsafe fn destroy(&self) {
++        self.lock.lock();
++        if (*self.initialized.get()) {
++            (*self.cond.get()).destroy();
++            *self.initialized.get() = false;
++        }
++        self.lock.unlock();
+         self.lock.destroy();
+-        self.cond.destroy();
++    }
++
++    #[inline]
++    unsafe fn initialize(&self) {
++        if (!*self.initialized.get()) {
++            (*self.cond.get()).init();
++            *self.initialized.get() = true;
++        }
+     }
+ }
+ 
+diff --git a/library/std/src/sys_common/io.rs b/library/std/src/sys_common/io.rs
+index 7c1d98a5abd..9446388e451 100644
+--- a/library/std/src/sys_common/io.rs
++++ b/library/std/src/sys_common/io.rs
+@@ -1,4 +1,5 @@
+-pub const DEFAULT_BUF_SIZE: usize = 8 * 1024;
++// Bare metal platforms usually have very small amounts of RAM (in the order of hundreds of KB)
++pub const DEFAULT_BUF_SIZE: usize = (if cfg!(target_os = "none") { 1 } else { 8 }) * 1024;
+ 
+ #[cfg(test)]
+ #[allow(dead_code)] // not used on emscripten
+-- 
+2.17.1
+

@@ -1,0 +1,26 @@
+From 0eb5ee2a0fe138440f2ec3fad55b777ea77d2f93 Mon Sep 17 00:00:00 2001
+From: Ivan Markov <ivan.markov@gmail.com>
+Date: Sun, 4 Jul 2021 12:49:23 +0300
+Subject: [PATCH 11/13] Extra branch in panic_unwind for target_family = unix,
+ but target_os = none
+
+---
+ library/panic_unwind/src/lib.rs | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/library/panic_unwind/src/lib.rs b/library/panic_unwind/src/lib.rs
+index 99a0c67fc11..9aad3e479cd 100644
+--- a/library/panic_unwind/src/lib.rs
++++ b/library/panic_unwind/src/lib.rs
+@@ -49,7 +49,7 @@ cfg_if::cfg_if! {
+     } else if #[cfg(any(
+         all(target_family = "windows", target_env = "gnu"),
+         target_os = "psp",
+-        target_family = "unix",
++        all(target_family = "unix", not(all(target_os = "none", target_vendor = "espressif"))),
+         all(target_vendor = "fortanix", target_env = "sgx"),
+     ))] {
+         // Rust runtime's startup objects depend on these symbols, so make them public.
+-- 
+2.17.1
+

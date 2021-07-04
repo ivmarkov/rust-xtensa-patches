@@ -1,0 +1,22 @@
+From ece444d73e11ca633108882f9e3c4185aa2fb7a8 Mon Sep 17 00:00:00 2001
+From: Christiaan Dirkx <christiaan@dirkx.email>
+Date: Wed, 28 Apr 2021 16:16:01 +0200
+Subject: [PATCH 07/13] Fix missing import in `unsupported::args`
+
+---
+ library/std/src/sys/unsupported/args.rs | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/library/std/src/sys/unsupported/args.rs b/library/std/src/sys/unsupported/args.rs
+index c924a7d8a26..a2d75a61976 100644
+--- a/library/std/src/sys/unsupported/args.rs
++++ b/library/std/src/sys/unsupported/args.rs
+@@ -1,4 +1,5 @@
+ use crate::ffi::OsString;
++use crate::fmt;
+ 
+ pub struct Args {}
+ 
+-- 
+2.17.1
+

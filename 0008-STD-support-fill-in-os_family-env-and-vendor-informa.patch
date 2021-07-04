@@ -1,0 +1,81 @@
+From 5b5308b3d1730be0bf9d48acf5c733244f06600c Mon Sep 17 00:00:00 2001
+From: Ivan Markov <ivan.markov@gmail.com>
+Date: Sat, 3 Jul 2021 17:17:05 +0300
+Subject: [PATCH 08/13] STD support - fill-in os_family, env, and vendor
+ information in the Xtensa targets
+
+---
+ compiler/rustc_target/src/spec/xtensa_esp32_none_elf.rs   | 7 ++++---
+ compiler/rustc_target/src/spec/xtensa_esp32s2_none_elf.rs | 7 ++++---
+ compiler/rustc_target/src/spec/xtensa_esp8266_none_elf.rs | 7 ++++---
+ 3 files changed, 12 insertions(+), 9 deletions(-)
+
+diff --git a/compiler/rustc_target/src/spec/xtensa_esp32_none_elf.rs b/compiler/rustc_target/src/spec/xtensa_esp32_none_elf.rs
+index ed522bfb801..93a175a4489 100644
+--- a/compiler/rustc_target/src/spec/xtensa_esp32_none_elf.rs
++++ b/compiler/rustc_target/src/spec/xtensa_esp32_none_elf.rs
+@@ -7,13 +7,14 @@ pub fn target() -> Target {
+         pointer_width: 32,
+         data_layout: "e-m:e-p:32:32-i8:8:32-i16:16:32-i64:64-n32".to_string(),
+         arch: "xtensa".to_string(),
+-        
++
+         options: TargetOptions {
+             endian: Endian::Little,
+             c_int_width: "32".to_string(),
++            os_family: Some("unix".to_string()),
+             os: "none".to_string(),
+-            env: String::new(),
+-            vendor: String::new(),
++            env: "newlib".to_string(),
++            vendor: "espressif".to_string(),
+             linker_flavor: LinkerFlavor::Gcc,
+ 
+             executables: true,
+diff --git a/compiler/rustc_target/src/spec/xtensa_esp32s2_none_elf.rs b/compiler/rustc_target/src/spec/xtensa_esp32s2_none_elf.rs
+index 4e404dad40d..6b9e723fbdf 100644
+--- a/compiler/rustc_target/src/spec/xtensa_esp32s2_none_elf.rs
++++ b/compiler/rustc_target/src/spec/xtensa_esp32s2_none_elf.rs
+@@ -7,13 +7,14 @@ pub fn target() -> Target {
+         pointer_width: 32,
+         data_layout: "e-m:e-p:32:32-i8:8:32-i16:16:32-i64:64-n32".to_string(),
+         arch: "xtensa".to_string(),
+-        
++
+         options: TargetOptions {
+             endian: Endian::Little,
+             c_int_width: "32".to_string(),
++            os_family: Some("unix".to_string()),
+             os: "none".to_string(),
+-            env: String::new(),
+-            vendor: String::new(),
++            env: "newlib".to_string(),
++            vendor: "espressif".to_string(),
+             linker_flavor: LinkerFlavor::Gcc,
+ 
+             executables: true,
+diff --git a/compiler/rustc_target/src/spec/xtensa_esp8266_none_elf.rs b/compiler/rustc_target/src/spec/xtensa_esp8266_none_elf.rs
+index f928a2f7333..7cde8406330 100644
+--- a/compiler/rustc_target/src/spec/xtensa_esp8266_none_elf.rs
++++ b/compiler/rustc_target/src/spec/xtensa_esp8266_none_elf.rs
+@@ -7,13 +7,14 @@ pub fn target() -> Target {
+         pointer_width: 32,
+         data_layout: "e-m:e-p:32:32-i8:8:32-i16:16:32-i64:64-n32".to_string(),
+         arch: "xtensa".to_string(),
+-        
++
+         options: TargetOptions {
+             endian: Endian::Little,
+             c_int_width: "32".to_string(),
++            os_family: Some("unix".to_string()),
+             os: "none".to_string(),
+-            env: String::new(),
+-            vendor: String::new(),
++            env: "newlib".to_string(),
++            vendor: "espressif".to_string(),
+             linker_flavor: LinkerFlavor::Gcc,
+ 
+             executables: true,
+-- 
+2.17.1
+
